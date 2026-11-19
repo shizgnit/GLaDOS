@@ -20,20 +20,30 @@ Consequences:
 - **Whisper verification is the real gatekeeper.** Detection without it produces a
   response for every podcast sentence.
 
-## Two-stage whisper verification
+## Three-gate whisper verification
 
 Problem: faster-whisper mishears quiet "GLaDOS" utterances ("G laddles", "Alexa, …").
 Using `initial_prompt="GLaDOS"` fixes transcription — but makes whisper **hallucinate**
-"GLaDOS" on pure noise (verified across multiple noise samples).
+"GLaDOS" on noise.
 
-Solution implemented in `_verify_sync`:
+`_verify_sync` therefore applies three gates:
 
-1. **Stage 1** — transcribe the last 3 s with no prompt; accept if it matches.
-2. **Stage 2** — only if stage 1 rejected *and* produced ≥ 3 words (i.e. real speech
-   was present), re-transcribe with `initial_prompt="GLaDOS"` and accept a match.
+1. **Stage 1 — no prompt:** transcribe the last 3 s with no prompt; accept if the
+   transcript matches "glados".
+2. **Stage 2 gate A — real speech present:** only if stage 1 rejected *and* produced
+   ≥ 3 words (i.e. real speech was present), re-transcribe with
+   `initial_prompt="GLaDOS"` and accept a match.
+3. **Stage 2 gate B — near-miss (added 2026-11-14):** the prompted re-transcription
+   only runs if the *stage-1* transcript is itself a near-miss of the wake word:
+   best 6-char letters-only window vs "glados" must score
+   `_max_window_ratio(text) >= NEAR_MISS_RATIO (0.65)`.
 
-The word-count gate blocks the pure-noise hallucination path while recovering quiet,
-misheard wake-word attempts. Both transcripts are logged on stage-2 PASS for debugging.
+Why gate B: with only gate A, the prompted whisper hallucinated "GLaDOS" on **any**
+multi-word sentence (TV dialogue, conversations) — the assistant responded "way too
+often… and not just to wake words" (the 2026-11-14 complaint). Measured separation:
+false-PASS stage-1 transcripts max out at ratio ≤ 0.50, while genuine misheard
+"glados" attempts score ≥ ~0.75. Both transcripts are logged on stage-2 PASS for
+debugging.
 
 ## Non-blocking verification (queue fix)
 
@@ -63,6 +73,7 @@ Fix: the handler factory creates a **per-connection `Model` instance** (~45 ms l
 | threshold | 0.50 | oww candidate cutoff (kept low; verification is the gate) |
 | `VERIFY_WINDOW_S` | 3.0 s | audio window handed to whisper |
 | `VERIFY_COOLDOWN_S` | 2.0 s | min gap between verifications per handler (same-burst guard) |
+| `NEAR_MISS_RATIO` | 0.65 | stage-2 near-miss cutoff (0.65 sits between the measured 0.50 noise floor and ≥0.75 real-mishearing band) |
 
 ## Testing gotcha
 

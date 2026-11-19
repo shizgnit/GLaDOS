@@ -1,44 +1,57 @@
 # Voice / TTS
 
-## Current: Piper (en_GB-alba-medium)
+## Current: OmniVoice GLaDOS-clone (re-enabled 2026-11-01)
 
-- Server: `wyoming-piper` on **tcp://127.0.0.1:10200** (launchd agent).
+The pipeline uses the cloned GLaDOS voice (see experiment history below) — the
+assistant sounds like GLaDOS:
+
+- Server: `wyoming-piper --backend omnivoice` on **tcp://127.0.0.1:10205**,
+  `--omnivoice-ref-dir ~/homeassistant/voice/models/glados_ref`
+  (reference audio of the GLaDOS voice), `--omnivoice-steps 5` (launchd agent
+  `wyoming-omnivoice-tts`).
+- Pipeline config: `tts_engine=tts.omnivoice`, `tts_language=en`, `tts_voice=glados`.
+- Cost: **~20–30 s per response** on this CPU (diffusion inference + reference
+  reload per connection). This is the price of the voice; if responses feel too
+  slow, switch the pipeline to Piper (below) and relaunch the agent later.
+
+## Fallback: Piper (en_GB-alba-medium)
+
+The plain Piper server keeps running in parallel:
+
+- Server: `wyoming-piper` on **tcp://127.0.0.1:10200** (launchd agent
+  `wyoming-piper-tts`).
 - Voices in `~/homeassistant/voice/models/piper/`:
-  - `en_GB-alba-medium` ← used by the pipeline
+  - `en_GB-alba-medium` ← the fallback voice
   - `en_GB-cori-high`, `en_GB-jenny_dioco-medium` (available)
-- Pipeline config: `tts_engine=tts.piper`, `tts_language=en_GB`,
-  `tts_voice=en_GB-alba-medium`.
-- Performance: synthesis is fast on CPU — measured **fetch ≈ 0.2 s** for a ~6–9 s
-  response, playback at real time. This is the "somewhat working" baseline the project
-  settled on.
+- Switching the pipeline to `tts_engine=tts.piper`, `tts_voice=en_GB-alba-medium`
+  restores the ~0.2 s-synthesis baseline.
 
-## Experimented: OmniVoice GLaDOS voice clone (rolled back)
+## Switching between them
+
+1. Stop HA → edit `~/homeassistant/config/.storage/assist_pipeline.pipelines`
+   (`tts_engine`/`tts_voice`) → start HA (no websocket command exists for this).
+   Previous states are preserved in `*.bak-omnivoice` / `*.bak-piper`.
+2. Optionally stop the unused server:
+   `launchctl bootout gui/$(id -u)/wyoming-omnivoice-tts` (or `wyoming-piper-tts`),
+   and re-`bootstrap` it when needed.
+   (Both agents come back at every login/reboot — they are installed launchd
+   agents; bootout only stops them for the current session.)
+
+## Experiment history: OmniVoice GLaDOS voice clone
 
 Goal: make the assistant sound like GLaDOS (speech patterns + timbre).
-
-- Server: `wyoming-piper --backend omnivoice` on **tcp://127.0.0.1:10205**, with
-  `--omnivoice-ref-dir ~/homeassistant/voice/models/glados_ref` (reference audio of the
-  GLaDOS voice) and `--omnivoice-steps 5`.
-- Pipeline config was switched to `tts_engine=tts.omnivoice`, `tts_voice=glados`.
-
-Results:
 
 | Aspect | Finding |
 |--------|---------|
 | Intelligibility | ✅ Good — whisper transcribed responses cleanly ("Oh, hello. I suppose you're here to test my capabilities.") |
 | Latency | ❌ ~25 s per response (CPU diffusion inference + reference reload per connection) vs 0.2 s for Piper |
-| Stability | ❌ Service hung repeatedly (accepted TCP connections but never answered events); HA coordinator logged `Unable to get info from 127.0.0.1:10205` all day; process had burned 150+ min CPU |
+| Stability | ❌ Hung repeatedly the first week (accepted TCP connections but never answered events); HA coordinator logged `Unable to get info from 127.0.0.1:10205` all day; process had burned 150+ min CPU |
 
-**Decision:** rolled back to Piper for reliability and latency. The omnivoice launchd
-agent was stopped (`launchctl bootout gui/$(id -u)/wyoming-omnivoice-tts`).
-
-### Re-enabling (if you want to try again)
-
-1. `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/wyoming-omnivoice-tts.plist`
-2. Set the pipeline back to `tts.omnivoice` / `glados` (previous state is preserved in
-   `~/homeassistant/config/.storage/assist_pipeline.pipelines.bak-omnivoice`).
-3. Expect ~20–30 s per response on this hardware; consider raising `--omnivoice-steps`
-   only if quality demands it (it gets slower).
+**History:** first deployed late October → rolled back to Piper (2026-10-31; the
+omnivoice state preserved as `*.bak-omnivoice`) → **re-enabled 2026-11-01 22:12**
+(the piper state preserved as `*.bak-piper`) and kept since — the latency trade-off
+was accepted for the voice. The stability issues have not recurred (agent running
+cleanly, HA log quiet on 10205).
 
 ## LLM "personality"
 

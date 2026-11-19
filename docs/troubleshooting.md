@@ -9,11 +9,26 @@
    speak, the model isn't seeing your audio (wrong mic? client not streaming?).
 3. **Are candidates being verified?** Look for `wake-word verification PASS/REJECT …`
    lines with transcripts. REJECTs mean whisper didn't hear "GLaDOS" — try speaking a
-   bit louder/clearer; quiet attempts are the known weak spot (see two-stage
-   verification in [wake-word.md](wake-word.md)).
+   bit louder/clearer; quiet attempts are the known weak spot (see [wake-word.md](wake-word.md)).
+   Note stage-2 lines only appear for near-miss transcripts (the 2026-11-14
+   near-miss gate) — ambient-speech REJECTs no longer attempt the prompted
+   re-transcription by design.
 4. **Leaked connections** — if `lsof -iTCP:10203` shows hundreds of ESTABLISHED
    sockets, a stuck client retry loop is saturating the event loop. Fix:
    `launchctl kickstart -k gui/$(id -u)/wyoming-openwakeword-wake`.
+
+## "It responds to everything / all the time"
+
+The 2026-11-14 fix (near-miss gate, [wake-word.md](wake-word.md)) addressed the
+over-triggering: the prompted whisper re-transcription only runs on stage-1
+transcripts that are already near-misses of "glados". If it regresses:
+
+- Confirm the satellite is running the patched code (a boot of an old copy is the
+  usual cause — `launchctl kickstart -k gui/$(id -u)/wyoming-openwakeword-wake`).
+- Check `wake.err.log` for a storm of `verification PASS` lines on TV speech; if
+  real sentences are passing, tighten `NEAR_MISS_RATIO` (0.65 → 0.70).
+- A misbehaving openWakeWord model update (retrained `glados.onnx`) can reintroduce
+  constant high scores — back up the model dir before retraining.
 
 ## Bluetooth headset flakiness
 
@@ -34,23 +49,38 @@ Speakers / Microphone** (System Settings → Sound) and the problem disappears e
 
 ## Slow responses
 
-- **TTS engine:** OmniVoice GLaDOS clone takes ~25 s/response on this CPU; Piper is
-  ~0.2 s. If responses are slow, check which TTS the pipeline uses (see [setup.md](setup.md)).
+- **TTS engine:** with the OmniVoice GLaDOS-clone voice active (since 2026-11-01),
+  **~20–30 s per response is normal** on this CPU — that is the voice, not a bug.
+  For instant responses, point the pipeline at `tts.piper` (see [voice-tts.md](voice-tts.md)).
+- **LLM:** qwen3.5:4b via LM Studio is usually a few seconds; check LM Studio is
+  running (`nc -z 127.0.0.1 1234`) and not busy with another request.
 - **Verification queue:** fixed by non-blocking verification — if you see long gaps
   again, look for a chain of `verification REJECT` lines in `wake.err.log` (TV noise
   storm) and confirm the satellite is running the patched code.
-- **LLM:** qwen3.5:4b via LM Studio is usually a few seconds; check LM Studio isn't
-  busy with another request.
 
 ## HA log spam: "Received binary message for non-existing handler"
 
 The client keeps streaming mic audio after a run ends (it's always listening); frames
 arriving at a torn-down binary handler are logged as errors by HA and dropped. Harmless,
-but it fills `ha.stderr.log` fast — filter with:
+but it fills the HA log fast — filter with:
 
 ```bash
-grep -v "non-existing handler" ~/homeassistant/logs/ha.stderr.log | tail
+grep -v "non-existing handler" ~/homeassistant/config/home-assistant.log | tail
 ```
+
+## Integration discovered but "not ready" (missing venv package)
+
+If an integration shows as failing/`ConfigEntryNotReady` right after a core update,
+its pip dependency may be missing from `~/homeassistant/venv` (this has bitten twice:
+`govee-local-api` for the Govee lights, `pyvesync` for Levoit). Check the required
+version in the integration's `manifest.json`, then:
+
+```bash
+~/homeassistant/venv/bin/python -m pip install <package>==<version>
+launchctl kickstart -k gui/$(id -u)/home-assistant
+```
+
+(The venv has no `pip` shim — always go through `python -m pip`.)
 
 ## Testing the satellite directly
 
@@ -85,5 +115,6 @@ asyncio.run(main())
 |------|------|
 | Client (wake word detected / playing response / device fallbacks) | `~/homeassistant/voice/logs/always.err.log` |
 | Satellite (scores, verification PASS/REJECT + transcripts) | `~/homeassistant/voice/logs/wake.err.log` |
-| Home Assistant (pipeline errors, TTS proxy) | `~/homeassistant/logs/ha.stderr.log` |
+| Home Assistant (pipeline errors, TTS proxy) | `~/homeassistant/config/home-assistant.log` (own log) / `~/homeassistant/logs/ha.stderr.log` (launchd capture) |
 | Piper / OmniVoice TTS servers | `~/homeassistant/voice/logs/piper.err.log`, `omnivoice.err.log` |
+| STT server | `~/homeassistant/voice/logs/whisper.err.log` |
